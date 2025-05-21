@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard Parkir</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <div class="container">
+    <h1>Dashboard Parkir - Sistem Monitoring</h1>
+    <div class="status-container">
+      <span id="connectionStatus">Menghubungkan ke sistem...</span>
+      <div id="spinner" class="loading"></div>
+    </div>
+
+    <div class="dashboard-container">
+      <svg class="parking-slots" width="600" height="250">
+        <g id="slots">
+          <!-- Slot 1 -->
+          <rect id="slot1" x="50" y="30" width="150" height="80" fill="green" rx="10" />
+          <text x="125" y="55" class="slot-text" text-anchor="middle">Slot 1</text>
+          <text id="status1" x="125" y="95" class="status-text" text-anchor="middle">Kosong</text>
+          <!-- Slot 2 -->
+          <rect id="slot2" x="225" y="30" width="150" height="80" fill="green" rx="10" />
+          <text x="300" y="55" class="slot-text" text-anchor="middle">Slot 2</text>
+          <text id="status2" x="300" y="95" class="status-text" text-anchor="middle">Kosong</text>
+          <!-- Slot 3 -->
+          <rect id="slot3" x="400" y="30" width="150" height="80" fill="green" rx="10" />
+          <text x="475" y="55" class="slot-text" text-anchor="middle">Slot 3</text>
+          <text id="status3" x="475" y="95" class="status-text" text-anchor="middle">Kosong</text>
+        </g>
+        <!-- Palang -->
+        <rect id="palang" x="220" y="140" width="160" height="40" fill="green" rx="10" />
+        <text id="palangText" x="300" y="166" class="palang-text" text-anchor="middle">Palang Terbuka</text>
+      </svg>
+    </div>
+
+    <!-- === Chart ThingSpeak di sini === -->
+    <div class="charts">
+      <!-- Grafik Slot Terisi -->
+      <iframe width="350" height="260" style="border:1px solid #cccccc;"
+        src="https://thingspeak.mathworks.com/channels/2959044/charts/1?bgcolor=%23f8f8f8&color=%23d62020&dynamic=true&results=5&title=Slot+Terisi&type=line&xaxis=Tanggal&yaxis=Slot+Terisi&yaxismax=3&yaxismin=0">
+      </iframe>
+
+      <!-- Grafik Slot Kosong -->
+      <iframe width="350" height="260" style="border:1px solid #cccccc;"
+        src="https://thingspeak.mathworks.com/channels/2959044/charts/2?bgcolor=%23ffffff&color=%23008000&dynamic=true&results=5&title=Slot+Kosong&type=line&xaxis=Tanggal&yaxis=Slot+Kosong&yaxismax=3&yaxismin=0">
+      </iframe>
+    </div>
+
+    <div class="charts">
+      <!-- Grafik Slot Total -->
+      <iframe width="350" height="260" style="border:1px solid #cccccc;"
+        src="https://thingspeak.mathworks.com/channels/2959044/charts/3?bgcolor=%23ffffff&color=%23FFFF00&dynamic=true&max=3&min=0&results=5&title=Slot+Mobil+Total&type=line&yaxismax=3&yaxismin=0">
+      </iframe>
+      
+      <!-- Update Terakhir & Statistik Sederhana -->
+      <div id="lastUpdate" style="width:350px; height:260px; border:1px solid #cccccc; display:flex; flex-direction:column; justify-content:center; align-items:center; background:#fff;">
+        <h3>Update Terakhir</h3>
+        <p id="lastUpdateTime">Menunggu data...</p>
+        <div id="slotStatistics">
+          <p>Slot Terisi: <span id="slotTerisi">0</span></p>
+          <p>Slot Kosong: <span id="slotKosong">0</span></p>
+          <p>Total Slot: <span id="totalSlot">3</span></p>
+        </div>
+      </div>
+    </div>
+    <!-- === Selesai: Chart ThingSpeak === -->
+
+    <div class="footer">
+      Update otomatis dari kamera setiap 3 detik.<br>
+      Status override bertahan 10 detik sebelum kembali ke deteksi otomatis.
+    </div>
+  </div>
+
+  <script>
+    async function fetchLocalStatus() {
+      try {
+        // cache‑buster supaya selalu ambil yang terbaru
+        const res = await fetch('status_parkir.json?t=' + Date.now());
+        const data = await res.json();
+
+        // 1) Update slot & palang
+        for (let i = 1; i <= data.statistik.total_slot; i++) {
+          const st = data.slot_status['slot'+i];
+          const rect = document.getElementById('slot'+i);
+          const txt  = document.getElementById('status'+i);
+          if (st === 'terisi') {
+            rect.setAttribute('fill','red');
+            txt.textContent = 'Terisi';
+          } else {
+            rect.setAttribute('fill','green');
+            txt.textContent = 'Kosong';
+          }
+        }
+        // Palang
+        const allFilled = data.statistik.slot_terisi === data.statistik.total_slot;
+        const pal = document.getElementById('palang');
+        const ptxt = document.getElementById('palangText');
+        if (allFilled) {
+          pal.setAttribute('fill','red');
+          ptxt.textContent = 'Palang Tertutup';
+        } else {
+          pal.setAttribute('fill','green');
+          ptxt.textContent = 'Palang Terbuka';
+        }
+
+        // 2) Update statistik ringkas
+        document.getElementById('slotTerisi').textContent = data.statistik.slot_terisi;
+        document.getElementById('slotKosong').textContent = data.statistik.slot_kosong;
+        document.getElementById('lastUpdateTime').textContent = data.last_update;
+        
+        // Update connection status
+        document.getElementById('connectionStatus').textContent = 'Terhubung ke sistem monitoring';
+        document.getElementById('connectionStatus').style.color = '#008000';
+        document.getElementById('spinner').style.display = 'none';
+      } catch (e) {
+        console.error('Gagal fetch status lokal:', e);
+        document.getElementById('connectionStatus').textContent = 'Gagal terhubung ke sistem';
+        document.getElementById('connectionStatus').style.color = 'red';
+        document.getElementById('spinner').style.display = 'none';
+      }
+    }
+
+    async function fetchThingSpeakData() {
+    try {
+      const res = await fetch('https://api.thingspeak.com/channels/2959044/feeds/last.json?api_key=KK47GSVGAJ223P1W');
+      const data = await res.json();
+
+      const slotTerisi = parseInt(data.field1);
+      const slotKosong = parseInt(data.field2);
+      const totalSlot = parseInt(data.field3);
+      const lastUpdate = new Date(data.created_at).toLocaleString();
+
+      // Update statistik ThingSpeak
+      document.getElementById('slotTerisi').textContent = slotTerisi;
+      document.getElementById('slotKosong').textContent = slotKosong;
+      document.getElementById('totalSlot').textContent = totalSlot;
+      document.getElementById('lastUpdateTime').textContent = lastUpdate;
+
+      console.log('[ThingSpeak] Statistik diperbarui');
+    } catch (e) {
+      console.error('Gagal fetch dari ThingSpeak:', e);
+    }
+  }
+
+  // Urutan fetch saat halaman dimuat
+  window.addEventListener('DOMContentLoaded', () => {
+    fetchLocalStatus();
+    setInterval(fetchLocalStatus, 3000);
+
+    fetchThingSpeakData();
+    setInterval(fetchThingSpeakData, 6000);
+  });
+</script>
+</body>
+</html>
