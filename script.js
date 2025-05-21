@@ -6,9 +6,9 @@ const updateSlotStatus = () => {
     .then(response => response.json())
     .then(data => {
       // Ambil data slot dari ThingSpeak (misal field1, field2, field3)
-      const slot1 = data.field1;
-      const slot2 = data.field2;
-      const slot3 = data.field3;
+      const slot1 = data.field4;
+      const slot2 = data.field5;
+      const slot3 = data.field6;
 
       // Update tampilan
       updateSlot(1, slot1 === "1" ? "terisi" : "kosong");
