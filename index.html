@@ -124,58 +124,14 @@
       }
     }
 
-      async function fetchThingSpeakData() {
-  try {
-    const res = await fetch('https://api.thingspeak.com/channels/2959044/feeds/last.json?api_key=KK47GSVGAJ223P1W');
-    const data = await res.json();
-
-    // Ambil data status slot dari field4,5,6
-    const slot1 = data.field4;
-    const slot2 = data.field5;
-    const slot3 = data.field6;
-
-    // Update tampilan slot (gunakan fungsi updateSlot dari JS)
-    updateSlot(1, slot1 === "1" ? "terisi" : "kosong");
-    updateSlot(2, slot2 === "1" ? "terisi" : "kosong");
-    updateSlot(3, slot3 === "1" ? "terisi" : "kosong");
-
-    // Hitung statistik
-    const slotTerisi = [slot1, slot2, slot3].filter(s => s === "1").length;
-    const slotKosong = 3 - slotTerisi;
-    
-    // Update statistik
-    document.getElementById('slotTerisi').textContent = slotTerisi;
-    document.getElementById('slotKosong').textContent = slotKosong;
-    document.getElementById('totalSlot').textContent = 3; // Total slot tetap 3
-    
-    // Update waktu terakhir
-    document.getElementById('lastUpdateTime').textContent = new Date(data.created_at).toLocaleString();
-
-    // Update palang (gunakan logika dari JS)
-    const palang = document.getElementById('palang');
-    const palangText = document.getElementById('palangText');
-    if (slotTerisi === 3) {
-      palang.setAttribute('fill', 'red');
-      palangText.textContent = 'Palang Tertutup';
-    } else {
-      palang.setAttribute('fill', 'green');
-      palangText.textContent = 'Palang Terbuka';
-    }
-
-    console.log('[ThingSpeak] Data slot diperbarui');
-  } catch (e) {
-    console.error('Gagal fetch dari ThingSpeak:', e);
-  }
-}
-
-  // Urutan fetch saat halaman dimuat
-  window.addEventListener('DOMContentLoaded', () => {
-    fetchLocalStatus();
-    setInterval(fetchLocalStatus, 3000);
-    
-</script>
+    // Urutan fetch saat halaman dimuat
+    window.addEventListener('DOMContentLoaded', () => {
+      fetchLocalStatus();
+      setInterval(fetchLocalStatus, 3000);
+    });
+  </script>
   
-<script src="script.js"></script>
-  
+  <!-- Muat script eksternal yang berisi fungsi ThingSpeak -->
+  <script src="script.js"></script>
 </body>
 </html>
