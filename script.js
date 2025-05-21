@@ -5,7 +5,7 @@ const updateSlotStatus = () => {
   fetch(`https://api.thingspeak.com/channels/${channelID}/feeds/last.json?api_key=${readAPIKey}`)
     .then(response => response.json())
     .then(data => {
-      // Ambil data slot dari ThingSpeak (misal field1, field2, field3)
+      // Ambil data slot dari ThingSpeak (misal field4, field5, field6)
       const slot1 = data.field4;
       const slot2 = data.field5;
       const slot3 = data.field6;
