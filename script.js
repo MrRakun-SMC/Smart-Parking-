@@ -1,20 +1,20 @@
-const channelID = "2959044"; // Ganti dengan Channel ID kamu
-const readAPIKey = "KK47GSVGAJ223P1W"; // Ganti dengan API Key kamu
+const channelID = "2959044"; // Channel ID ThingSpeak
+const readAPIKey = "KK47GSVGAJ223P1W"; // API Key ThingSpeak
 
 const updateSlotStatus = () => {
   fetch(`https://api.thingspeak.com/channels/${channelID}/feeds/last.json?api_key=${readAPIKey}`)
     .then(response => response.json())
     .then(data => {
-      // Ambil data slot dari ThingSpeak (misal field4, field5, field6)
+      // Ambil data slot dari ThingSpeak (field4, field5, field6)
       const slot1 = data.field4;
       const slot2 = data.field5;
       const slot3 = data.field6;
-
+      
       // Update tampilan
       updateSlot(1, slot1 === "1" ? "terisi" : "kosong");
       updateSlot(2, slot2 === "1" ? "terisi" : "kosong");
       updateSlot(3, slot3 === "1" ? "terisi" : "kosong");
-
+      
       // Update statistik
       const slotTerisi = [slot1, slot2, slot3].filter(s => s === "1").length;
       const slotKosong = 3 - slotTerisi;
@@ -23,9 +23,8 @@ const updateSlotStatus = () => {
       document.getElementById("slotKosong").textContent = slotKosong;
       
       // Update waktu terakhir
-      const now = new Date();
-      document.getElementById("lastUpdateTime").textContent = now.toLocaleString();
-
+      document.getElementById("lastUpdateTime").textContent = new Date(data.created_at).toLocaleString();
+      
       // Update status palang
       const allFilled = slot1 === "1" && slot2 === "1" && slot3 === "1";
       const palang = document.getElementById("palang");
@@ -38,6 +37,8 @@ const updateSlotStatus = () => {
         palang.setAttribute("fill", "green");
         palangText.textContent = "Palang Terbuka";
       }
+      
+      console.log("[ThingSpeak] Data slot diperbarui");
     })
     .catch(error => console.error("Gagal ambil data:", error));
 };
