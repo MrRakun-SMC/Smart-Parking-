@@ -1,0 +1,375 @@
+import cv2
+import numpy as np
+import json
+import time
+import requests
+import os
+from datetime import datetime
+from threading import Thread
+
+# Konfigurasi
+THINGSPEAK_API_KEY = "WRITE API THINKSPEAK KEY KAMU DISINI"
+DETECTION_INTERVAL = 1  # Dipercepat untuk respons lebih cepat
+THINGSPEAK_UPLOAD_INTERVAL = 15  # Interval pengiriman data ke ThingSpeak
+SAVE_JSON_INTERVAL = 2  # Interval penyimpanan status ke JSON
+
+# Konfigurasi deteksi
+DETECTION_PARAMETERS = {
+    'std_threshold': 25,      # Threshold standar deviasi (dari kode referensi)
+    'mean_threshold': 50,     # Threshold mean (dari kode referensi)
+    'motion_threshold': 0.1, # Persentase perubahan untuk deteksi gerakan
+    'history': 100,           # Background subtractor history
+    'var_threshold': 16,      # Background subtractor variance threshold
+    'min_consecutive': 3,     # Jumlah deteksi berturut-turut yang sama untuk mengubah status
+    'edge_ignore': 25         # Piksel yang diabaikan di tepi (untuk menghindari garis putih)
+}
+
+# Inisialisasi kamera
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+
+# Definisi area parkir
+slot_width = 250  
+slot_height = 450  
+start_y = 190  
+slot_gap = 70
+
+slot1_x = 570
+slot2_x = slot1_x + slot_width + slot_gap
+slot3_x = slot2_x + slot_width + slot_gap
+
+slot_coords = [
+    (slot1_x, start_y, slot_width, slot_height),
+    (slot2_x, start_y, slot_width, slot_height),
+    (slot3_x, start_y, slot_width, slot_height)
+]
+
+# Definisi area parkir keseluruhan dengan margin tambahan
+extra_margin = 30
+parking_area_x = slot1_x - extra_margin
+parking_area_y = start_y - extra_margin
+parking_area_width = (slot3_x + slot_width) - slot1_x + (extra_margin * 2)
+parking_area_height = slot_height + (extra_margin * 2)
+
+# Inisialisasi background subtractor untuk deteksi gerakan
+back_sub = cv2.createBackgroundSubtractorMOG2(
+    history=DETECTION_PARAMETERS['history'], 
+    varThreshold=DETECTION_PARAMETERS['var_threshold'], 
+    detectShadows=False
+)
+
+# Inisialisasi status parkir
+slot_status = {f"slot{i+1}": "kosong" for i in range(len(slot_coords))}
+slot_detection_counter = {f"slot{i+1}": 0 for i in range(len(slot_coords))}
+
+# Fungsi untuk memeriksa slot terisi - DIPERBARUI
+def cek_terisi(frame, prev_frame, roi, index):
+    x, y, w, h = roi
+    edge_ignore = DETECTION_PARAMETERS['edge_ignore']
+    
+    # Validasi ROI berada dalam batas frame
+    height, width = frame.shape[:2]
+    x = max(0, min(x, width-1))
+    y = max(0, min(y, height-1))
+    w = min(w, width-x)
+    h = min(h, height-y)
+    
+    # Ekstrak ROI dengan area yang lebih sempit untuk menghindari garis putih
+    # Menambah edge_ignore untuk menjauhkan dari garis putih
+    slot_roi = frame[y+edge_ignore:y+h-edge_ignore, x+edge_ignore:x+w-edge_ignore]
+    if slot_roi.size == 0:
+        return False
+    
+    # Konversi ke grayscale jika belum
+    if len(slot_roi.shape) > 2:
+        slot_roi_gray = cv2.cvtColor(slot_roi, cv2.COLOR_BGR2GRAY)
+    else:
+        slot_roi_gray = slot_roi
+    
+    # Metode 1: Deteksi berbasis statistik - Dengan threshold yang diperbarui
+    std_dev = np.std(slot_roi_gray)
+    mean_val = np.mean(slot_roi_gray)
+    
+    # Tambahkan kontras untuk meningkatkan deteksi
+    # Gunakan Contrast Limited Adaptive Histogram Equalization
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    slot_roi_enhanced = clahe.apply(slot_roi_gray)
+    
+    # Metode 2: Background subtraction untuk deteksi gerakan
+    fg_mask = back_sub.apply(slot_roi)
+    _, fg_binary = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
+    filled_area = cv2.countNonZero(fg_binary)
+    adjusted_area = (w - 2*edge_ignore) * (h - 2*edge_ignore)
+    motion_ratio = filled_area / adjusted_area if adjusted_area > 0 else 0
+    
+    # Deteksi perubahan antar frame
+    motion_detected = False
+    if prev_frame is not None:
+        prev_roi = prev_frame[y+edge_ignore:y+h-edge_ignore, x+edge_ignore:x+w-edge_ignore]
+        if prev_roi.size > 0:
+            if len(prev_roi.shape) > 2:
+                prev_roi_gray = cv2.cvtColor(prev_roi, cv2.COLOR_BGR2GRAY)
+            else:
+                prev_roi_gray = prev_roi
+                
+            # Gunakan absolute difference untuk deteksi perubahan
+            frame_diff = cv2.absdiff(slot_roi_enhanced, prev_roi_gray)
+            _, frame_diff_thresh = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)
+            diff_pixels = cv2.countNonZero(frame_diff_thresh)
+            diff_ratio = diff_pixels / adjusted_area if adjusted_area > 0 else 0
+            motion_detected = diff_ratio > DETECTION_PARAMETERS['motion_threshold']
+    
+    # Kombinasikan hasil deteksi
+    # Perketat logika deteksi
+    is_empty = (std_dev < DETECTION_PARAMETERS['std_threshold'] and 
+                mean_val > DETECTION_PARAMETERS['mean_threshold'] and
+                motion_ratio < 0.05)  # Tambahkan syarat motion_ratio rendah
+    
+    # Jika terdeteksi gerakan, beri prioritas pada hasil motion detection
+    if motion_detected:
+        # Jika terdeteksi gerakan, beri toleransi pada hasil statistik
+        return not is_empty or motion_ratio > 0.2
+    else:
+        # Jika tidak ada gerakan, andalkan hasil statistik yang lebih ketat
+        return not is_empty
+    
+# Fungsi untuk mengirim data ke ThingSpeak
+def send_to_thingspeak(slot_status):
+    try:
+        # Hitung jumlah slot terisi dan kosong
+        slots_occupied = sum(1 for status in slot_status.values() if status == "terisi")
+        slots_empty = len(slot_status) - slots_occupied
+        
+        payload = {
+            "api_key": THINGSPEAK_API_KEY,
+            # Kirim hanya 3 field yang diinginkan
+            "field1": slots_occupied,    # Total slot terisi
+            "field2": slots_empty,       # Total slot kosong
+            "field3": slots_occupied,    # Total mobil (sama dengan slot terisi)
+            "field4": 1 if slot_status["slot1"] == "terisi" else 0,
+            "field5": 1 if slot_status["slot2"] == "terisi" else 0,
+            "field6": 1 if slot_status["slot3"] == "terisi" else 0,
+        }
+        requests.post("https://api.thingspeak.com/update", params=payload)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Data terkirim ke ThingSpeak: {slots_occupied} slot terisi")
+        return True
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Gagal kirim ke ThingSpeak: {e}")
+        return False
+
+# Fungsi untuk memeriksa status override dari web
+def check_web_override():
+    try:
+        if os.path.exists("status_parkir.json"):
+            with open("status_parkir.json", "r") as f:
+                data = json.load(f)
+                if data.get("web_override", False):
+                    return data["slot_status"]
+        return None
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error baca override: {e}")
+        return None
+
+# Inisialisasi variabel untuk tracking
+last_detection_time = time.time()
+last_thingspeak_time = time.time()
+last_json_save_time = time.time()
+prev_frame = None
+thingspeak_success = True
+
+# Buat jendela display
+cv2.namedWindow("Deteksi Parkir", cv2.WINDOW_NORMAL)
+
+# Loop utama
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Sistem deteksi parkir dimulai")
+
+while True:
+    try:
+        # Baca frame dari kamera
+        ret, frame = cap.read()
+        if not ret:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Error membaca frame")
+            time.sleep(0.5)
+            continue
+
+        current_time = time.time()
+        
+        # Pra-proses frame untuk analisis
+        frame_blur = cv2.GaussianBlur(frame.copy(), (5, 5), 3)
+        frame_gray = cv2.cvtColor(frame_blur, cv2.COLOR_BGR2GRAY)
+        
+        # Periksa override status dari web
+        web_override = check_web_override()
+        if web_override:
+            slot_status = web_override
+            # Reset counter deteksi
+            slot_detection_counter = {f"slot{i+1}": 0 for i in range(len(slot_coords))}
+            try:
+                with open("status_parkir.json", "r+") as f:
+                    data = json.load(f)
+                    data["web_override"] = False
+                    f.seek(0)
+                    json.dump(data, f)
+                    f.truncate()
+            except Exception as e:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Error reset override: {e}")
+        
+        # Proses deteksi slot parkir
+        elif current_time - last_detection_time >= DETECTION_INTERVAL:
+            last_detection_time = current_time
+            
+            # Lakukan deteksi untuk setiap slot
+            for i, roi in enumerate(slot_coords):
+                slot_id = f"slot{i+1}"
+                current_status = slot_status[slot_id]
+                
+                # Deteksi apakah slot terisi
+                is_occupied = cek_terisi(frame, prev_frame, roi, i)
+                detected_status = "terisi" if is_occupied else "kosong"
+                
+                # Jika status yang terdeteksi sama dengan status sebelumnya, increment counter
+                if detected_status == current_status:
+                    slot_detection_counter[slot_id] = 0
+                else:
+                    slot_detection_counter[slot_id] += 1
+                
+                # Ubah status hanya jika telah terdeteksi konsisten selama beberapa frame
+                if slot_detection_counter[slot_id] >= DETECTION_PARAMETERS['min_consecutive']:
+                    if current_status != detected_status:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Slot {i+1} berubah dari {current_status} menjadi {detected_status}")
+                        slot_status[slot_id] = detected_status
+                        slot_detection_counter[slot_id] = 0
+            
+            # Simpan frame untuk perbandingan berikutnya
+            prev_frame = frame.copy()
+        
+        # Hitung statistik slot
+        slot_terisi = sum(1 for s in slot_status.values() if s == "terisi")
+        slot_kosong = len(slot_coords) - slot_terisi
+        
+        # Persiapkan data untuk disimpan
+        data = {
+            "slot_status": slot_status,
+            "statistik": {
+                "slot_terisi": slot_terisi,
+                "slot_kosong": slot_kosong,
+                "total_slot": len(slot_coords)
+            },
+            "web_override": False,
+            "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        # Simpan data ke file JSON
+        if current_time - last_json_save_time >= SAVE_JSON_INTERVAL:
+            last_json_save_time = current_time
+            try:
+                with open("status_parkir.json", "w") as f:
+                    json.dump(data, f, indent=2)
+            except Exception as e:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Error tulis status: {e}")
+        
+        # Kirim data ke ThingSpeak
+        if current_time - last_thingspeak_time >= THINGSPEAK_UPLOAD_INTERVAL:
+            last_thingspeak_time = current_time
+            thingspeak_success = Thread(target=send_to_thingspeak, args=(slot_status,)).start()
+        
+        # Visualisasi hasil deteksi
+        frame_out = frame.copy()
+        
+        # Gambar area parkir
+        cv2.rectangle(frame_out, (parking_area_x, parking_area_y),
+                     (parking_area_x + parking_area_width, parking_area_y + parking_area_height), (255, 0, 0), 2)
+        
+        # Gambar dan beri label slot parkir
+        for i, (x, y, w, h) in enumerate(slot_coords):
+            status = slot_status[f"slot{i+1}"]
+            color = (0, 0, 255) if status == "terisi" else (0, 255, 0)
+            
+            # Gambar dua kotak - kotak luar dan kotak dalam (region yang digunakan untuk deteksi)
+            cv2.rectangle(frame_out, (x, y), (x+w, y+h), color, 3)
+            edge_ignore = DETECTION_PARAMETERS['edge_ignore']
+            cv2.rectangle(frame_out, (x+edge_ignore, y+edge_ignore), 
+                         (x+w-edge_ignore, y+h-edge_ignore), (255, 255, 0), 1)
+            
+            # Tambahkan teks informasi
+            cv2.putText(frame_out, f"Slot {i+1}: {status}", (x, y-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        
+        # Tampilkan informasi status
+        info_y = parking_area_y + parking_area_height + 50
+        cv2.putText(frame_out, "Sistem Deteksi Parkir - Tekan 'q' untuk keluar",
+                   (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(frame_out, f"Slot terisi: {slot_terisi}/{len(slot_coords)}",
+                   (parking_area_x, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(frame_out, f"Slot kosong: {slot_kosong}/{len(slot_coords)}",
+                   (parking_area_x, info_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # Tampilkan status koneksi ThingSpeak
+        thingspeak_status = "OK" if thingspeak_success else "Gagal"
+        status_color = (0, 255, 0) if thingspeak_success else (0, 0, 255)
+        cv2.putText(frame_out, f"ThingSpeak: {thingspeak_status}",
+                   (parking_area_x, info_y + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        sisa_waktu = max(0, DETECTION_INTERVAL - (current_time - last_detection_time))
+        cv2.putText(frame_out, f"Deteksi dalam {sisa_waktu:.1f}s",
+                (parking_area_x, info_y + 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+
+        # Tampilkan legenda keterangan
+        legend_y = info_y + 120
+        cv2.putText(frame_out, "Keterangan:", (parking_area_x, legend_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.rectangle(frame_out, (parking_area_x, legend_y + 20), (parking_area_x + 20, legend_y + 40), (0, 0, 255), -1)
+        cv2.putText(frame_out, "Terisi", (parking_area_x + 30, legend_y + 35),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.rectangle(frame_out, (parking_area_x, legend_y + 50), (parking_area_x + 20, legend_y + 70), (0, 255, 0), -1)
+        cv2.putText(frame_out, "Kosong", (parking_area_x + 30, legend_y + 65),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.rectangle(frame_out, (parking_area_x, legend_y + 80), (parking_area_x + 20, legend_y + 100), (255, 255, 0), -1)
+        cv2.putText(frame_out, "Area deteksi", (parking_area_x + 30, legend_y + 95),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Tampilkan frame
+        cv2.imshow("Deteksi Parkir", frame_out)
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error: {e}")
+        time.sleep(0.5)
+    
+    # Periksa input keyboard
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Program dihentikan oleh pengguna")
+        break
+    elif key == ord('c'):
+        # Simpan screenshot
+        filename = f"parking_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        cv2.imwrite(filename, frame_out)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Screenshot disimpan: {filename}")
+    elif key == ord('r'):
+        # Reset background subtractor
+        back_sub = cv2.createBackgroundSubtractorMOG2(
+            history=DETECTION_PARAMETERS['history'], 
+            varThreshold=DETECTION_PARAMETERS['var_threshold'], 
+            detectShadows=False
+        )
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Background subtractor direset")
+    elif key == ord('a'):
+        # Sesuaikan parameter deteksi
+        DETECTION_PARAMETERS['edge_ignore'] += 5
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Edge ignore ditingkatkan: {DETECTION_PARAMETERS['edge_ignore']}")
+    elif key == ord('s'):
+        # Kurangi parameter deteksi
+        DETECTION_PARAMETERS['edge_ignore'] = max(5, DETECTION_PARAMETERS['edge_ignore'] - 5)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Edge ignore dikurangi: {DETECTION_PARAMETERS['edge_ignore']}")
+    elif key == ord('t'):
+        # Test pengiriman ThingSpeak
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Mengirim test data ke ThingSpeak...")
+        Thread(target=send_to_thingspeak, args=(slot_status,)).start()
+
+# Bersihkan
+cap.release()
+cv2.destroyAllWindows()
+time.sleep(1)
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Program selesai")
