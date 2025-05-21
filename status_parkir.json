@@ -1,0 +1,14 @@
+{
+  "slot_status": {
+    "slot1": "kosong",
+    "slot2": "kosong",
+    "slot3": "kosong"
+  },
+  "statistik": {
+    "slot_terisi": 0,
+    "slot_kosong": 3,
+    "total_slot": 3
+  },
+  "web_override": false,
+  "last_update": "2025-05-21 19:59:55"
+}
